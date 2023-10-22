@@ -1,0 +1,7 @@
+chaincode.env
+connection.json
+*.tar.gz
+*.tgz
+vendor
+chaincode.env.example
+Dockerfile
