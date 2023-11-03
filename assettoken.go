@@ -5,6 +5,7 @@ SPDX-License-Identifier: Apache-2.0
 package main
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -14,6 +15,10 @@ import (
 )
 
 const ownerRecIndex = "owner~hlasset"
+const assetRecIndex = "assetId~docType" //Id+Doctype
+const tokenRecIndex = "tokenId~docType"
+
+//
 
 // SmartContract provides functions for managing a Asset and Token
 type SmartContract struct {
@@ -98,7 +103,12 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	}
 
 	//Inserting Asset record
-	err = ctx.GetStub().PutState(assetInput.ID, assetAsBytes)
+	assetCompositeKey, err := ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{assetInput.ID, assetInput.DocType})
+	if err != nil {
+		return fmt.Errorf("Error while creating composite key for asset %v and err is :%v", assetInput.ID, err.Error())
+	}
+
+	err = ctx.GetStub().PutState(assetCompositeKey, assetAsBytes)
 	if err != nil {
 		return fmt.Errorf("Error while inserting data to couchDB : %v", err.Error())
 	}
@@ -129,50 +139,13 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	return nil
 }
 
-// func (s *SmartContract) IsAssetExist(ctx contractapi.TransactionContextInterface, assetId string) (bool, error) {
-// 	assetDetails, err := ctx.GetStub().GetState(assetId)
-// 	if err != nil {
-// 		return false, fmt.Errorf("Error while pulling state : %v", err.Error())
-// 	}
-// 	return assetDetails != nil, nil
-// }
-
-// func (s *SmartContract) IsAssetExist(ctx contractapi.TransactionContextInterface, assetId string) (bool, error) {
-// 	assetDetails, err := ctx.GetStub().GetState(assetId)
-// 	if err != nil {
-// 		return false, fmt.Errorf("Error while pulling state : %v", err.Error())
-// 	}
-// 	return assetDetails != nil, nil
-// }
-
-// func queryAsset(ctx contractapi.TransactionContextInterface, assetId string) (*Asset, error) {
-// 	assetAsBytes, err := ctx.GetStub().GetState(assetId)
-
-// 	if err != nil {
-// 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
-// 	}
-// 	if assetAsBytes == nil {
-// 		return nil, fmt.Errorf("record not found for %s", assetId)
-// 	}
-// 	assetRecord := new(Asset)
-// 	_ = json.Unmarshal(assetAsBytes, assetRecord)
-// 	return assetRecord, nil
-// }
-
-// func (s *SmartContract) GetAssetDetails(ctx contractapi.TransactionContextInterface, assetId string) (*Asset, error) {
-// 	//Check if asset ID is present or not
-// 	isExist, err := s.IsAssetExist(ctx, assetId)
-// 	if err != nil {
-// 		return nil, err
-// 	}
-// 	if !isExist {
-// 		return nil, fmt.Errorf("Asset does not exist with ID : %v", assetId)
-// 	}
-// 	return queryAsset(ctx, assetId)
-// }
-
 func (s *SmartContract) GetAssetDetails(ctx contractapi.TransactionContextInterface, assetId string) (*Asset, error) {
-	assetAsBytes, err := ctx.GetStub().GetState(assetId)
+	assetCompositeKey, err := ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{assetId, "ASSET"})
+	if err != nil {
+		return nil, fmt.Errorf("Error while creating composite key for asset %v and err is :%v", assetId, err.Error())
+	}
+
+	assetAsBytes, err := ctx.GetStub().GetState(assetCompositeKey)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
 	}
@@ -183,41 +156,6 @@ func (s *SmartContract) GetAssetDetails(ctx contractapi.TransactionContextInterf
 	_ = json.Unmarshal(assetAsBytes, assetRecord)
 	return assetRecord, nil
 }
-
-/*Total Asset and Token holding by Owner*/
-// func (s *SmartContract) TotalAssetPerOwnerWithQuery(ctx contractapi.TransactionContextInterface, owner string) ([]Owner, error) {
-// 	queryString := fmt.Sprintf(`{"selector":{"id":"%s"}}`, owner)
-// 	resultsIterator, err := ctx.GetStub().GetQueryResult(queryString)
-// 	if err != nil {
-// 		return nil, fmt.Errorf("Error found during GetQueryResult :%s", err.Error())
-// 	}
-// 	defer resultsIterator.Close()
-
-// 	var ownerTotalAsset []Owner
-// 	for resultsIterator.HasNext() {
-// 		queryResult, err := resultsIterator.Next()
-// 		if err != nil {
-// 			return nil, fmt.Errorf("Error found query Result :%s", err.Error())
-// 		}
-// 		fmt.Println("queryResult : ", queryResult)
-// 		ownerBytes, err := ctx.GetStub().GetState(queryResult.Key)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("Error found During get state :%s", err.Error())
-// 		}
-// 		fmt.Println("ownerBytes : ", ownerBytes)
-
-// 		var ownerRecord Owner
-// 		err = json.Unmarshal(ownerBytes, &ownerRecord)
-// 		if err != nil {
-// 			return nil, fmt.Errorf("Error found During unmarshal :%s", err.Error())
-// 		}
-// 		fmt.Println("ownerRecord : ", ownerRecord)
-// 		ownerTotalAsset = append(ownerTotalAsset, ownerRecord)
-// 		fmt.Println("ownerTotalAsset : ", ownerTotalAsset)
-// 		fmt.Println("********************************")
-// 	}
-// 	return ownerTotalAsset, nil
-// }
 
 /*Total Asset and Token holding by Owner*/
 func (s *SmartContract) TotalAssetPerOwnerWithoutQuery(ctx contractapi.TransactionContextInterface, queryString string) ([]Owner, error) {
@@ -313,11 +251,14 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	}
 
 	//Fetching Owner from asset ID
-	//assetDetails, err := queryAsset(ctx, tokenInput.AssetID)
 	tokenInput.Owner = asset.Owner
+
+	//Calculating reserve token
 	if tokenInput.ReserveToken == 0 {
 		tokenInput.ReserveToken = int(float32(tokenInput.TotalToken) * 0.75)
 	}
+
+	//calculating avaliable token
 	tokenInput.AvailableToken = tokenInput.TotalToken - tokenInput.ReserveToken
 
 	tokenAsBytes, err := json.Marshal(tokenInput)
@@ -326,7 +267,11 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	}
 
 	//Inserting Token record
-	err = ctx.GetStub().PutState(tokenInput.ID, tokenAsBytes)
+	tokenCompositeKey, err := ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{tokenInput.ID, tokenInput.DocType})
+	if err != nil {
+		return fmt.Errorf("Error while creating composite key for token %v and err is :%v", tokenInput.ID, err.Error())
+	}
+	err = ctx.GetStub().PutState(tokenCompositeKey, tokenAsBytes)
 	if err != nil {
 		return fmt.Errorf("Error while inserting data to couchDB : %v", err.Error())
 	}
@@ -365,25 +310,13 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	return nil
 }
 
-// func (s *SmartContract) IsTokenExist(ctx contractapi.TransactionContextInterface, tokenId string) (bool, error) {
-// 	tokenDetails, err := ctx.GetStub().GetState(tokenId)
-// 	if err != nil {
-// 		return false, fmt.Errorf("Error while pulling state : %v", err.Error())
-// 	}
-// 	return tokenDetails != nil, nil
-// }
-
 func (s *SmartContract) GetTokenDetails(ctx contractapi.TransactionContextInterface, tokenId string) (*Token, error) {
-	//Check if Token ID is present or not
-	//isExist, err := s.IsTokenExist(ctx, tokenId)
-	// if err != nil {
-	// 	return nil, err
-	// }
-	// if !isExist {
-	// 	return nil, fmt.Errorf("Asset does not exist with ID : %v", tokenId)
-	// }
+	tokenCompositeKey, err := ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{tokenId, "TOKEN"})
+	if err != nil {
+		return nil, fmt.Errorf("Error while creating composite key for token %v and err is :%v", tokenId, err.Error())
+	}
 
-	tokenAsBytes, err := ctx.GetStub().GetState(tokenId)
+	tokenAsBytes, err := ctx.GetStub().GetState(tokenCompositeKey)
 	if err != nil {
 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
 	}
@@ -395,18 +328,42 @@ func (s *SmartContract) GetTokenDetails(ctx contractapi.TransactionContextInterf
 	return tokenRecord, nil
 }
 
-func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, owner string, tokenId string) (int, error) {
-	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{owner, tokenId})
+func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, ownerToken string) (int, error) {
+	ownerInput := struct {
+		Owner   string `json:"owner"`
+		TokenId string `json:"tokenid"`
+	}{}
+
+	err := json.Unmarshal([]byte(ownerToken), &ownerInput)
 	if err != nil {
-		return 0, fmt.Errorf("Error while creating composite key for owner %v and err is :%v", owner, err.Error())
+		return 0, fmt.Errorf("Error while doing unmarshal of input string : %v", err.Error())
 	}
+	fmt.Println("Input String :", ownerInput)
+
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{ownerInput.Owner, ownerInput.TokenId})
+	if err != nil {
+		return 0, fmt.Errorf("Error while creating composite key for owner %v and err is :%v", ownerInput.Owner, err.Error())
+	}
+
+	// Get ID of submitting client identity
+	b64ID, err := ctx.GetClientIdentity().GetID()
+	if err != nil {
+		fmt.Errorf("failed to get b64ID : %v", err)
+	}
+	fmt.Println("b64ID Id : ", b64ID)
+
+	decodeID, err := base64.StdEncoding.DecodeString(b64ID)
+	if err != nil {
+		fmt.Errorf("failed to base64 decode clientID: %v", err)
+	}
+	fmt.Println("decodeID Id : ", string(decodeID))
 
 	ownerBytes, err := ctx.GetStub().GetState(compositeKey)
 	if err != nil {
 		return 0, fmt.Errorf("Failed to read data from workd state %s", err.Error())
 	}
 	if ownerBytes == nil {
-		return 0, fmt.Errorf("record not found for %s and %s", tokenId, owner)
+		return 0, fmt.Errorf("record not found for %s and %s", ownerInput.TokenId, ownerInput.Owner)
 	}
 	ownerRecord := new(Owner)
 	_ = json.Unmarshal(ownerBytes, ownerRecord)
@@ -520,12 +477,6 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, to
 		}
 		senderDetail.Balance = updatedSenderBalance
 		fmt.Println("Sender Updated balance :", senderDetail.Balance)
-
-		// updatedReceiverBalance, err := add(receiverDetail.Balance, transferAmount)
-		// if err != nil {
-		// 	return err
-		// }
-		// receiverDetail.Balance = updatedReceiverBalance
 
 		receiverDetail := Owner{
 			Id:            receiver,
