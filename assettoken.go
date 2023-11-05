@@ -5,20 +5,19 @@ SPDX-License-Identifier: Apache-2.0
 package main
 
 import (
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
-const ownerRecIndex = "owner~hlasset"
-const assetRecIndex = "assetId~docType" //Id+Doctype
-const tokenRecIndex = "tokenId~docType"
-
-//
+const ownerRecIndex = "owner~id"
+const assetRecIndex = "assetId~doctype" //Id+Doctype
+const tokenRecIndex = "tokenId~doctype"
+const ASSET = "ASSET"
+const TOKEN = "TOKEN"
+const OWNER = "OWNER"
 
 // SmartContract provides functions for managing a Asset and Token
 type SmartContract struct {
@@ -92,8 +91,18 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	}
 
 	//Check if asset ID is present or not
-	asset, _ := s.GetAssetDetails(ctx, assetInput.ID)
-	if asset != nil {
+	//asset, _ := s.GetAssetDetails(ctx, assetInput.ID)
+	assetDetailer, err := s.GetDetails(ctx, assetInput.ID, ASSET, "")
+	if err != nil {
+		return err
+	}
+	// Type assertion to convert Detailer interface to Asset type
+	// asset, ok := assetDetailer.(Asset)
+	// if !ok {
+	// 	return fmt.Errorf("Failed to convert Detailer to Asset type")
+	// }
+
+	if assetDetailer != nil {
 		return fmt.Errorf("Asset already exist with ID : %v", assetInput.ID)
 	}
 
@@ -139,22 +148,90 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	return nil
 }
 
-func (s *SmartContract) GetAssetDetails(ctx contractapi.TransactionContextInterface, assetId string) (*Asset, error) {
-	assetCompositeKey, err := ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{assetId, "ASSET"})
+// func (s *SmartContract) GetAssetDetails(ctx contractapi.TransactionContextInterface, assetId string) (*Asset, error) {
+// 	assetCompositeKey, err := ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{assetId, "ASSET"})
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Error while creating composite key for asset %v and err is :%v", assetId, err.Error())
+// 	}
+
+// 	assetAsBytes, err := ctx.GetStub().GetState(assetCompositeKey)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
+// 	}
+// 	if assetAsBytes == nil {
+// 		return nil, fmt.Errorf("record not found for %s", assetId)
+// 	}
+// 	assetRecord := new(Asset)
+// 	_ = json.Unmarshal(assetAsBytes, assetRecord)
+// 	return assetRecord, nil
+// }
+
+func (s *SmartContract) GetDetails(ctx contractapi.TransactionContextInterface, id string, docType string, owner string) (interface{}, error) {
+	var recIndex string
+	var recIndexParam []string
+	if docType == "ASSET" {
+		recIndex = assetRecIndex
+		recIndexParam = []string{id, "ASSET"}
+		//compositeKey, err = ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{id, "ASSET"})
+	} else if docType == "TOKEN" {
+		recIndex = tokenRecIndex
+		recIndexParam = []string{id, "TOKEN"}
+		//compositeKey, err = ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{id, "TOKEN"})
+	} else if docType == "OWNER" {
+		recIndex = ownerRecIndex
+		recIndexParam = []string{owner, id}
+		//compositeKey, err = ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{owner, id})
+	}
+	fmt.Println("RecIndex : ", recIndex)
+	fmt.Println("RecIndex Param : ", recIndexParam)
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(recIndex, recIndexParam)
 	if err != nil {
-		return nil, fmt.Errorf("Error while creating composite key for asset %v and err is :%v", assetId, err.Error())
+		return nil, fmt.Errorf("Error while creating composite key for id %v and err is :%v", id, err.Error())
+	}
+	fmt.Println("Composite Key : ", compositeKey)
+	objectBytes, err := ctx.GetStub().GetState(compositeKey)
+	if err != nil {
+		return nil, fmt.Errorf("Failed to read data from world state %s", err.Error())
+	}
+	if objectBytes == nil {
+		return nil, nil
 	}
 
-	assetAsBytes, err := ctx.GetStub().GetState(assetCompositeKey)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
+	fmt.Println("objectBytes : ", objectBytes)
+	fmt.Println("objectBytes : ", string(objectBytes))
+	fmt.Printf("type objectBytes : %T\n", (objectBytes))
+	switch docType {
+	case "ASSET":
+		var asset Asset
+		err = json.Unmarshal(objectBytes, &asset)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to unmarshal asset data: %s", err.Error())
+		}
+
+		fmt.Println("Asset Rec : ", asset)
+		return asset, nil
+	case "TOKEN":
+		var token Token
+		err = json.Unmarshal(objectBytes, &token)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to unmarshal token data: %s", err.Error())
+		}
+		fmt.Println("token Rec : ", token)
+		return token, nil
+	case "OWNER":
+		var owner Owner
+		err = json.Unmarshal(objectBytes, &owner)
+		if err != nil {
+			return nil, fmt.Errorf("Failed to unmarshal owner data: %s", err.Error())
+		}
+		fmt.Println("owner Rec : ", owner)
+		return owner, nil
+	default:
+		return nil, fmt.Errorf("Unsupported docType: %s", docType)
 	}
-	if assetAsBytes == nil {
-		return nil, fmt.Errorf("record not found for %s", assetId)
-	}
-	assetRecord := new(Asset)
-	_ = json.Unmarshal(assetAsBytes, assetRecord)
-	return assetRecord, nil
+
+	//return string(objectBytes), nil
+
 }
 
 /*Total Asset and Token holding by Owner*/
@@ -192,18 +269,18 @@ func (s *SmartContract) TotalAssetPerOwnerWithoutQuery(ctx contractapi.Transacti
 	return ownerTotalAsset, nil
 }
 
-func (s *SmartContract) GetOwnerDetailWithKey(ctx contractapi.TransactionContextInterface, key string) (*Owner, error) {
-	ownerBytes, err := ctx.GetStub().GetState(key)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
-	}
-	if ownerBytes == nil {
-		return nil, fmt.Errorf("record not found for %s", key)
-	}
-	ownerRecord := new(Owner)
-	_ = json.Unmarshal(ownerBytes, ownerRecord)
-	return ownerRecord, nil
-}
+// func (s *SmartContract) GetOwnerDetailWithKey(ctx contractapi.TransactionContextInterface, key string) (*Owner, error) {
+// 	ownerBytes, err := ctx.GetStub().GetState(key)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
+// 	}
+// 	if ownerBytes == nil {
+// 		return nil, fmt.Errorf("record not found for %s", key)
+// 	}
+// 	ownerRecord := new(Owner)
+// 	_ = json.Unmarshal(ownerBytes, ownerRecord)
+// 	return ownerRecord, nil
+// }
 
 /**************************************************/
 
@@ -239,15 +316,27 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	}
 
 	//Check if token ID is present or not
-	token, _ := s.GetTokenDetails(ctx, tokenInput.ID)
-	if token != nil {
+	//token, _ := s.GetTokenDetails(ctx, tokenInput.ID)
+	tokenDetailer, err := s.GetDetails(ctx, tokenInput.ID, TOKEN, "")
+	if err != nil {
+		return err
+	}
+	if tokenDetailer != nil {
 		return fmt.Errorf("Token already exist with ID : %v", tokenInput.ID)
 	}
 
 	//Check if asset ID is present or not
-	asset, _ := s.GetAssetDetails(ctx, tokenInput.AssetID)
-	if asset == nil {
+	assetDetailer, err := s.GetDetails(ctx, tokenInput.AssetID, ASSET, "")
+	if err != nil {
+		return err
+	}
+	if assetDetailer == nil {
 		return fmt.Errorf("Asset does not exist with ID : %v", tokenInput.AssetID)
+	}
+
+	asset, ok := assetDetailer.(Asset)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Asset type")
 	}
 
 	//Fetching Owner from asset ID
@@ -310,23 +399,23 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	return nil
 }
 
-func (s *SmartContract) GetTokenDetails(ctx contractapi.TransactionContextInterface, tokenId string) (*Token, error) {
-	tokenCompositeKey, err := ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{tokenId, "TOKEN"})
-	if err != nil {
-		return nil, fmt.Errorf("Error while creating composite key for token %v and err is :%v", tokenId, err.Error())
-	}
+// func (s *SmartContract) GetTokenDetails(ctx contractapi.TransactionContextInterface, tokenId string) (*Token, error) {
+// 	tokenCompositeKey, err := ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{tokenId, "TOKEN"})
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Error while creating composite key for token %v and err is :%v", tokenId, err.Error())
+// 	}
 
-	tokenAsBytes, err := ctx.GetStub().GetState(tokenCompositeKey)
-	if err != nil {
-		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
-	}
-	if tokenAsBytes == nil {
-		return nil, fmt.Errorf("record not found for %s", tokenId)
-	}
-	tokenRecord := new(Token)
-	_ = json.Unmarshal(tokenAsBytes, tokenRecord)
-	return tokenRecord, nil
-}
+// 	tokenAsBytes, err := ctx.GetStub().GetState(tokenCompositeKey)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Failed to read data from workd state %s", err.Error())
+// 	}
+// 	if tokenAsBytes == nil {
+// 		return nil, fmt.Errorf("record not found for %s", tokenId)
+// 	}
+// 	tokenRecord := new(Token)
+// 	_ = json.Unmarshal(tokenAsBytes, tokenRecord)
+// 	return tokenRecord, nil
+// }
 
 func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, ownerToken string) (int, error) {
 	ownerInput := struct {
@@ -340,89 +429,169 @@ func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, o
 	}
 	fmt.Println("Input String :", ownerInput)
 
-	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{ownerInput.Owner, ownerInput.TokenId})
+	ownerDetailer, err := s.GetDetails(ctx, ownerInput.TokenId, OWNER, ownerInput.Owner)
 	if err != nil {
-		return 0, fmt.Errorf("Error while creating composite key for owner %v and err is :%v", ownerInput.Owner, err.Error())
+		return 0, err
+	}
+	if ownerDetailer == nil {
+		return 0, fmt.Errorf("failed to get owner details for tokenID : %v", ownerInput.TokenId)
 	}
 
-	// Get ID of submitting client identity
-	b64ID, err := ctx.GetClientIdentity().GetID()
-	if err != nil {
-		fmt.Errorf("failed to get b64ID : %v", err)
+	owner, ok := ownerDetailer.(Owner)
+	if !ok {
+		return 0, fmt.Errorf("Failed to convert Detailer to Owner type")
 	}
-	fmt.Println("b64ID Id : ", b64ID)
 
-	decodeID, err := base64.StdEncoding.DecodeString(b64ID)
-	if err != nil {
-		fmt.Errorf("failed to base64 decode clientID: %v", err)
-	}
-	fmt.Println("decodeID Id : ", string(decodeID))
-
-	ownerBytes, err := ctx.GetStub().GetState(compositeKey)
-	if err != nil {
-		return 0, fmt.Errorf("Failed to read data from workd state %s", err.Error())
-	}
-	if ownerBytes == nil {
-		return 0, fmt.Errorf("record not found for %s and %s", ownerInput.TokenId, ownerInput.Owner)
-	}
-	ownerRecord := new(Owner)
-	_ = json.Unmarshal(ownerBytes, ownerRecord)
-	return ownerRecord.Balance, nil
+	return owner.Balance, nil
 }
 
-func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, tokenId string, sender string, receiver string, amountToTransfer string) error {
-	//Validate tokenid
-	tokenDet, _ := s.GetTokenDetails(ctx, tokenId)
-	if tokenDet == nil {
-		return fmt.Errorf("Token does not exist with ID : %v", tokenDet)
-	}
-	fmt.Println("Token Details :", tokenDet)
+// func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, ownerToken string) (int, error) {
+// 	ownerInput := struct {
+// 		Owner   string `json:"owner"`
+// 		TokenId string `json:"tokenid"`
+// 	}{}
 
-	//Get Sender details
-	senderCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{sender, tokenId})
+// 	err := json.Unmarshal([]byte(ownerToken), &ownerInput)
+// 	if err != nil {
+// 		return 0, fmt.Errorf("Error while doing unmarshal of input string : %v", err.Error())
+// 	}
+// 	fmt.Println("Input String :", ownerInput)
+
+// 	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{ownerInput.Owner, ownerInput.TokenId})
+// 	if err != nil {
+// 		return 0, fmt.Errorf("Error while creating composite key for owner %v and err is :%v", ownerInput.Owner, err.Error())
+// 	}
+
+// 	// Get ID of submitting client identity
+// 	b64ID, err := ctx.GetClientIdentity().GetID()
+// 	if err != nil {
+// 		fmt.Errorf("failed to get b64ID : %v", err)
+// 	}
+// 	fmt.Println("b64ID Id : ", b64ID)
+
+// 	decodeID, err := base64.StdEncoding.DecodeString(b64ID)
+// 	if err != nil {
+// 		fmt.Errorf("failed to base64 decode clientID: %v", err)
+// 	}
+// 	fmt.Println("decodeID Id : ", string(decodeID))
+
+// 	ownerBytes, err := ctx.GetStub().GetState(compositeKey)
+// 	if err != nil {
+// 		return 0, fmt.Errorf("Failed to read data from workd state %s", err.Error())
+// 	}
+// 	if ownerBytes == nil {
+// 		return 0, fmt.Errorf("record not found for %s and %s", ownerInput.TokenId, ownerInput.Owner)
+// 	}
+// 	ownerRecord := new(Owner)
+// 	_ = json.Unmarshal(ownerBytes, ownerRecord)
+// 	return ownerRecord.Balance, nil
+// }
+
+func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, transferTxnInput string) error {
+	transferTxn := struct {
+		TokenId          string `json:"tokenid"`
+		Sender           string `json:"sender"`
+		Receiver         string `json:"receiver"`
+		AmountToTransfer int    `json:"amountToTransfer"`
+	}{}
+
+	err := json.Unmarshal([]byte(transferTxnInput), &transferTxn)
 	if err != nil {
-		return fmt.Errorf("Error while creating composite key for sender %v and err is :%v", sender, err.Error())
+		return fmt.Errorf("failed to unmarshal of input string : %v", err.Error())
 	}
-	senderDetail, err := s.GetOwnerDetailWithKey(ctx, senderCompositeKey)
+	fmt.Println("Input String :", transferTxn)
+
+	//Validate tokenid
+	//tokenDet, _ := s.GetTokenDetails(ctx, tokenId)
+	tokenDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, TOKEN, "")
 	if err != nil {
 		return err
+	}
+	if tokenDetailer == nil {
+		return fmt.Errorf("Token does not exist with ID : %v", transferTxn.TokenId)
+	}
+	fmt.Println("Token Details :", tokenDetailer)
+
+	//Get Sender details
+	// senderCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{sender, tokenId})
+	// if err != nil {
+	// 	return fmt.Errorf("Error while creating composite key for sender %v and err is :%v", sender, err.Error())
+	// }
+
+	//senderDetail, err := s.GetOwnerDetailWithKey(ctx, senderCompositeKey)
+	senderDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Sender)
+	if err != nil {
+		return err
+	}
+	if senderDetailer == nil {
+		return fmt.Errorf("failed to get sender details for tokenID : %v", transferTxn.TokenId)
+	}
+	senderDetail, ok := senderDetailer.(Owner)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Sender type")
 	}
 	fmt.Println("Sender Details :", senderDetail)
 
 	//Validate sender balance
-	transferAmount, err := strconv.Atoi(amountToTransfer)
-	if err != nil {
-		return err
-	}
-	if senderDetail.Balance < transferAmount {
+	// transferAmount, err := strconv.Atoi(amountToTransfer)
+	// if err != nil {
+	// 	return err
+	// }
+	if senderDetail.Balance < transferTxn.AmountToTransfer {
 		return fmt.Errorf("Insufficient Balance to transfer")
 	}
 
 	//Getting Receiver
-	var isReceiverExist bool = true
-	receiverCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{receiver, tokenId})
+	var isReceiverExist bool = false
+	var receiverDetail Owner
+	//var ok bool
+	// receiverCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{receiver, tokenId})
+	// if err != nil {
+	// 	return fmt.Errorf("Error while creating composite key for receiver %v and err is :%v", sender, err.Error())
+	// }
+	// receiverDetail, err := s.GetOwnerDetailWithKey(ctx, receiverCompositeKey)
+
+	receiverDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Receiver)
 	if err != nil {
-		return fmt.Errorf("Error while creating composite key for receiver %v and err is :%v", sender, err.Error())
+		return err
 	}
-	receiverDetail, err := s.GetOwnerDetailWithKey(ctx, receiverCompositeKey)
-	if err != nil {
-		if strings.HasPrefix(err.Error(), "record not found") {
-			isReceiverExist = false
-		} else {
-			return err
+	if receiverDetailer != nil {
+		isReceiverExist = true
+		receiverDetail, ok = receiverDetailer.(Owner)
+		if !ok {
+			return fmt.Errorf("Failed to convert Detailer to Receiver type")
 		}
 	}
 	fmt.Println("Receiver Details :", receiverDetail)
-	fmt.Println("Reeciver exst :", isReceiverExist)
+
+	// if err != nil {
+	// 	if strings.HasPrefix(err.Error(), "record not found") {
+	// 		isReceiverExist = false
+	// 	} else {
+	// 		return err
+	// 	}
+	// }
+	//fmt.Println("Receiver Details :", receiverDetail)
+	fmt.Println("Receiver exist :", isReceiverExist)
+
+	senderCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{transferTxn.Sender, transferTxn.TokenId})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for sender %v and err is :%v", transferTxn.Sender, err.Error())
+	}
+
+	receiverCompositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{transferTxn.Receiver, transferTxn.TokenId})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for receiver %v and err is :%v", transferTxn.Receiver, err.Error())
+	}
 
 	//create Transaction record
 	txID := ctx.GetStub().GetTxID()
 	txn := Transaction{
 		Id:       txID,
-		TokenId:  tokenId,
-		Sender:   sender,
-		Receiver: receiver,
-		Amount:   transferAmount,
+		TokenId:  transferTxn.TokenId,
+		Sender:   transferTxn.Sender,
+		Receiver: transferTxn.Receiver,
+		Amount:   transferTxn.AmountToTransfer,
 	}
 
 	txnBytes, err := json.Marshal(txn)
@@ -436,14 +605,14 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, to
 
 	if isReceiverExist {
 		//Update balance for Sender
-		updatedSenderBalance, err := sub(senderDetail.Balance, transferAmount)
+		updatedSenderBalance, err := sub(senderDetail.Balance, transferTxn.AmountToTransfer)
 		if err != nil {
 			return err
 		}
 		senderDetail.Balance = updatedSenderBalance
 		fmt.Println("Sender Updated balance :", senderDetail.Balance)
 
-		updatedReceiverBalance, err := add(receiverDetail.Balance, transferAmount)
+		updatedReceiverBalance, err := add(receiverDetail.Balance, transferTxn.AmountToTransfer)
 		if err != nil {
 			return err
 		}
@@ -471,19 +640,19 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, to
 
 	} else {
 		//Update balance for Sender
-		updatedSenderBalance, err := sub(senderDetail.Balance, transferAmount)
+		updatedSenderBalance, err := sub(senderDetail.Balance, transferTxn.AmountToTransfer)
 		if err != nil {
 			return err
 		}
 		senderDetail.Balance = updatedSenderBalance
 		fmt.Println("Sender Updated balance :", senderDetail.Balance)
 
-		receiverDetail := Owner{
-			Id:            receiver,
+		receiverDetail = Owner{
+			Id:            transferTxn.Receiver,
 			DocType:       "OWNER",
-			ParentId:      tokenId,
+			ParentId:      transferTxn.TokenId,
 			ParentDocType: "TOKEN",
-			Balance:       transferAmount,
+			Balance:       transferTxn.AmountToTransfer,
 		}
 
 		senderBytes, err := json.Marshal(senderDetail)
