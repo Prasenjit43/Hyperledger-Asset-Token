@@ -5,4 +5,3 @@ connection.json
 vendor
 chaincode.env.example
 Dockerfile
-README.md

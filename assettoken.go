@@ -8,7 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/golang/protobuf/ptypes"
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
@@ -18,6 +20,8 @@ const tokenRecIndex = "tokenId~doctype"
 const ASSET = "ASSET"
 const TOKEN = "TOKEN"
 const OWNER = "OWNER"
+const TRANSFER = "TRANSFER"
+const BURN = "BURN"
 
 // SmartContract provides functions for managing a Asset and Token
 type SmartContract struct {
@@ -56,17 +60,26 @@ type Owner struct {
 }
 
 type Transaction struct {
-	Id       string `json:"id"`
-	TokenId  string `json:"tokenId"`
-	Sender   string `json:"sender"`
-	Receiver string `json:"receiver"`
-	Amount   int    `json:"amount"`
+	Id          string `json:"id"`
+	DocType     string `json:"doctype"`
+	TokenId     string `json:"tokenId"`
+	Sender      string `json:"sender"`
+	Receiver    string `json:"receiver"`
+	TokenBurner string `json:"tokenBurner"`
+	Amount      int    `json:"amount"`
 }
 
 type Record struct {
 	AssetRec []Asset
 	TokenRec []Token
 	OwnerRec Owner
+}
+
+type History struct {
+	Record    *Owner    `json:"record"`
+	TxId      string    `json:"txId"`
+	Timestamp time.Time `json:"timestamp"`
+	IsDelete  bool      `json:"isDelete"`
 }
 
 func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface, assetInputString string) error {
@@ -91,7 +104,7 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	}
 
 	//Check if asset ID is present or not
-	assetDetailer, err := s.GetDetails(ctx, assetInput.ID, ASSET, "")
+	assetDetailer, err := getDetails(ctx, assetInput.ID, ASSET, "")
 	if err != nil {
 		return err
 	}
@@ -140,7 +153,7 @@ func (s *SmartContract) CreateAsset(ctx contractapi.TransactionContextInterface,
 	return nil
 }
 
-func (s *SmartContract) GetDetails(ctx contractapi.TransactionContextInterface, id string, docType string, owner string) (interface{}, error) {
+func getDetails(ctx contractapi.TransactionContextInterface, id string, docType string, owner string) (interface{}, error) {
 	var recIndex string
 	var recIndexParam []string
 	if docType == "ASSET" {
@@ -273,7 +286,7 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	}
 
 	//Check if token ID is present or not
-	tokenDetailer, err := s.GetDetails(ctx, tokenInput.ID, TOKEN, "")
+	tokenDetailer, err := getDetails(ctx, tokenInput.ID, TOKEN, "")
 	if err != nil {
 		return err
 	}
@@ -282,7 +295,7 @@ func (s *SmartContract) MintToken(ctx contractapi.TransactionContextInterface, t
 	}
 
 	//Check if asset ID is present or not
-	assetDetailer, err := s.GetDetails(ctx, tokenInput.AssetID, ASSET, "")
+	assetDetailer, err := getDetails(ctx, tokenInput.AssetID, ASSET, "")
 	if err != nil {
 		return err
 	}
@@ -365,7 +378,7 @@ func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, o
 	}
 	fmt.Println("Input String :", ownerInput)
 
-	ownerDetailer, err := s.GetDetails(ctx, ownerInput.TokenId, OWNER, ownerInput.Owner)
+	ownerDetailer, err := getDetails(ctx, ownerInput.TokenId, OWNER, ownerInput.Owner)
 	if err != nil {
 		return 0, err
 	}
@@ -381,7 +394,7 @@ func (s *SmartContract) BalanceOf(ctx contractapi.TransactionContextInterface, o
 	return owner.Balance, nil
 }
 
-func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, transferTxnInput string) error {
+func (s *SmartContract) Transfer_Old(ctx contractapi.TransactionContextInterface, transferTxnInput string) error {
 	transferTxn := struct {
 		TokenId          string `json:"tokenid"`
 		Sender           string `json:"sender"`
@@ -396,7 +409,7 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, tr
 	fmt.Println("Input String :", transferTxn)
 
 	//Validate tokenid
-	tokenDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, TOKEN, "")
+	tokenDetailer, err := getDetails(ctx, transferTxn.TokenId, TOKEN, "")
 	if err != nil {
 		return err
 	}
@@ -406,7 +419,7 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, tr
 	fmt.Println("Token Details :", tokenDetailer)
 
 	//Get Sender details
-	senderDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Sender)
+	senderDetailer, err := getDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Sender)
 	if err != nil {
 		return err
 	}
@@ -427,7 +440,7 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, tr
 	//Getting Receiver
 	var isReceiverExist bool = false
 	var receiverDetail Owner
-	receiverDetailer, err := s.GetDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Receiver)
+	receiverDetailer, err := getDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Receiver)
 	if err != nil {
 		return err
 	}
@@ -542,6 +555,449 @@ func (s *SmartContract) Transfer(ctx contractapi.TransactionContextInterface, tr
 		}
 	}
 	fmt.Println("*****************************")
+	return nil
+}
+
+func (s *SmartContract) TransferToken(ctx contractapi.TransactionContextInterface, transferTxnInput string) error {
+	transferTxn := struct {
+		TokenId          string `json:"tokenid"`
+		Sender           string `json:"sender"`
+		Receiver         string `json:"receiver"`
+		AmountToTransfer int    `json:"amountToTransfer"`
+	}{}
+
+	err := json.Unmarshal([]byte(transferTxnInput), &transferTxn)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal of input string : %v", err.Error())
+	}
+	fmt.Println("Input String :", transferTxn)
+
+	//Validate tokenid
+	tokenDetailer, err := getDetails(ctx, transferTxn.TokenId, TOKEN, "")
+	if err != nil {
+		return err
+	}
+	if tokenDetailer == nil {
+		return fmt.Errorf("Token does not exist with ID : %v", transferTxn.TokenId)
+	}
+	fmt.Println("Token Details :", tokenDetailer)
+
+	//Get Sender details
+	senderDetailer, err := getDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Sender)
+	if err != nil {
+		return err
+	}
+	if senderDetailer == nil {
+		return fmt.Errorf("failed to get sender details for tokenID : %v", transferTxn.TokenId)
+	}
+	senderDetail, ok := senderDetailer.(Owner)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Sender type")
+	}
+	fmt.Println("Sender Details :", senderDetail)
+
+	//Validate sender balance
+	if senderDetail.Balance < transferTxn.AmountToTransfer {
+		return fmt.Errorf("Insufficient Balance to transfer")
+	}
+
+	//Getting Receiver
+	var isReceiverExist bool = false
+	var receiverDetail Owner
+	receiverDetailer, err := getDetails(ctx, transferTxn.TokenId, OWNER, transferTxn.Receiver)
+	if err != nil {
+		return err
+	}
+	if receiverDetailer != nil {
+		isReceiverExist = true
+		receiverDetail, ok = receiverDetailer.(Owner)
+		if !ok {
+			return fmt.Errorf("Failed to convert Detailer to Receiver type")
+		}
+	}
+	fmt.Println("Receiver Details :", receiverDetail)
+	fmt.Println("Receiver exist :", isReceiverExist)
+
+	//create Transaction record
+	txID := ctx.GetStub().GetTxID()
+	txn := Transaction{
+		Id:       txID,
+		DocType:  TRANSFER,
+		TokenId:  transferTxn.TokenId,
+		Sender:   transferTxn.Sender,
+		Receiver: transferTxn.Receiver,
+		Amount:   transferTxn.AmountToTransfer,
+	}
+
+	txnBytes, err := json.Marshal(txn)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(txID, txnBytes)
+	if err != nil {
+		return err
+	}
+
+	if !isReceiverExist {
+		receiverDetail = Owner{
+			Id:            transferTxn.Receiver,
+			DocType:       OWNER,
+			ParentId:      transferTxn.TokenId,
+			ParentDocType: TOKEN,
+			Balance:       0,
+		}
+	}
+
+	// err = removeBalance(ctx, senderDetail, transferTxn.AmountToTransfer)
+	// if err != nil {
+	// 	return err
+	// }
+
+	// err = addBalance(ctx, receiverDetail, transferTxn.AmountToTransfer)
+	// if err != nil {
+	// 	return err
+	// }
+
+	err = senderDetail.removeBalance(ctx, transferTxn.AmountToTransfer)
+	if err != nil {
+		return err
+	}
+
+	err = receiverDetail.addBalance(ctx, transferTxn.AmountToTransfer)
+	if err != nil {
+		return err
+	}
+
+	fmt.Println("*****************************")
+	return nil
+}
+
+func (s *SmartContract) TransferAsset(ctx contractapi.TransactionContextInterface, transferTxnInput string) error {
+	transferTxn := struct {
+		AssetId string `json:"assetId"`
+		//From    string `json:"from"`
+		To []string `json:"to"`
+	}{}
+
+	err := json.Unmarshal([]byte(transferTxnInput), &transferTxn)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal of input string : %v", err.Error())
+	}
+	fmt.Println("Input String :", transferTxn)
+
+	//Check if asset ID is present or not
+	assetDetailer, err := getDetails(ctx, transferTxn.AssetId, ASSET, "")
+	if err != nil {
+		return err
+	}
+	if assetDetailer == nil {
+		return fmt.Errorf("Asset does not exist with ID : %v", transferTxn.AssetId)
+	}
+	asset, ok := assetDetailer.(Asset)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Asset type")
+	}
+
+	//Delete the asset
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(assetRecIndex, []string{transferTxn.AssetId, ASSET})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for asset %v and err is :%v", transferTxn.AssetId, err.Error())
+	}
+	err = ctx.GetStub().DelState(compositeKey)
+	if err != nil {
+		return fmt.Errorf("failed to delete asset for %v", transferTxn.AssetId)
+	}
+
+	asset.Owner = transferTxn.To
+	assetAsBytes, err := json.Marshal(asset)
+	if err != nil {
+		return fmt.Errorf("failed to marshal asset")
+	}
+
+	err = ctx.GetStub().PutState(compositeKey, assetAsBytes)
+	if err != nil {
+		return fmt.Errorf("failed to insert asset for %v", transferTxn.AssetId)
+	}
+
+	return nil
+}
+
+func (s *SmartContract) BurnToken(ctx contractapi.TransactionContextInterface, inputDetails string) error {
+	burnTxnDetails := struct {
+		TokenId          string `json:"tokenid"`
+		Owner            string `json:"owner"`
+		TokenCountToBurn int    `json:"tokenCountToBurn"`
+	}{}
+
+	err := json.Unmarshal([]byte(inputDetails), &burnTxnDetails)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal of input string : %v", err.Error())
+	}
+	fmt.Println("Input String :", &burnTxnDetails)
+
+	//Validate tokenid
+	tokenDetailer, err := getDetails(ctx, burnTxnDetails.TokenId, TOKEN, "")
+	if err != nil {
+		return err
+	}
+	if tokenDetailer == nil {
+		return fmt.Errorf("Token does not exist with ID : %v", burnTxnDetails.TokenId)
+	}
+
+	tokenDetails, ok := tokenDetailer.(Token)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Sender type")
+	}
+	fmt.Println("Token Details :", tokenDetails)
+
+	//Get Sender details
+	ownerDetailer, err := getDetails(ctx, burnTxnDetails.TokenId, OWNER, burnTxnDetails.Owner)
+	if err != nil {
+		return err
+	}
+	if ownerDetailer == nil {
+		return fmt.Errorf("failed to get sender details for tokenID : %v", burnTxnDetails.TokenId)
+	}
+	ownerDetail, ok := ownerDetailer.(Owner)
+	if !ok {
+		return fmt.Errorf("Failed to convert Detailer to Sender type")
+	}
+	fmt.Println("Sender Details :", ownerDetail)
+
+	//burning token from owner's account
+	err = ownerDetail.removeBalance(ctx, burnTxnDetails.TokenCountToBurn)
+	if err != nil {
+		return err
+	}
+
+	//updating token details
+	updatedAvaliableToken := tokenDetails.AvailableToken - burnTxnDetails.TokenCountToBurn
+	tokenDetails.AvailableToken = updatedAvaliableToken
+
+	updatedTotalToken := tokenDetails.TotalToken - burnTxnDetails.TokenCountToBurn
+	tokenDetails.TotalToken = updatedTotalToken
+
+	//Inserting Token record
+	tokenAsBytes, err := json.Marshal(tokenDetails)
+	if err != nil {
+		return fmt.Errorf("failed to Marshal of Token records : %v", err.Error())
+	}
+
+	tokenCompositeKey, err := ctx.GetStub().CreateCompositeKey(tokenRecIndex, []string{tokenDetails.ID, tokenDetails.DocType})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for token %v and err is :%v", tokenDetails.ID, err.Error())
+	}
+	err = ctx.GetStub().PutState(tokenCompositeKey, tokenAsBytes)
+	if err != nil {
+		return fmt.Errorf("failed to insert data to couchDB : %v", err.Error())
+	}
+
+	//create Transaction record
+	txID := ctx.GetStub().GetTxID()
+	txn := Transaction{
+		Id:          txID,
+		DocType:     BURN,
+		TokenId:     tokenDetails.ID,
+		TokenBurner: ownerDetail.Id,
+		Amount:      burnTxnDetails.TokenCountToBurn,
+	}
+
+	txnBytes, err := json.Marshal(txn)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(txID, txnBytes)
+	if err != nil {
+		return err
+	}
+
+	return nil
+
+}
+
+func (s *SmartContract) GetHistory(ctx contractapi.TransactionContextInterface, inputDetails string) ([]interface{}, error) {
+	txnDetails := struct {
+		Id      string `json:"id"`
+		DocType string `json:"doctype"`
+		Owner   string `json:"owner"`
+	}{}
+
+	err := json.Unmarshal([]byte(inputDetails), &txnDetails)
+	if err != nil {
+		return nil, fmt.Errorf("failed to unmarshal of input string : %v", err.Error())
+	}
+	fmt.Println("Input String :", &txnDetails)
+
+	var recIndex string
+	var recIndexParam []string
+	if txnDetails.DocType == "ASSET" {
+		recIndex = assetRecIndex
+		recIndexParam = []string{txnDetails.Id, "ASSET"}
+	} else if txnDetails.DocType == "TOKEN" {
+		recIndex = tokenRecIndex
+		recIndexParam = []string{txnDetails.Id, "TOKEN"}
+
+	} else if txnDetails.DocType == "OWNER" {
+		recIndex = ownerRecIndex
+		recIndexParam = []string{txnDetails.Owner, txnDetails.Id}
+	}
+	fmt.Println("RecIndex : ", recIndex)
+	fmt.Println("RecIndex Param : ", recIndexParam)
+
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(recIndex, recIndexParam)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create composite key for id %v and err is :%v", txnDetails.Id, err.Error())
+	}
+	fmt.Println("Composite Key : ", compositeKey)
+
+	resultsIterator, err := ctx.GetStub().GetHistoryForKey(compositeKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get history for key %s: %v", compositeKey, err.Error())
+	}
+
+	defer resultsIterator.Close()
+
+	historyRecord := struct {
+		Record    interface{} `json:"record"`
+		TxId      string      `json:"txId"`
+		Timestamp time.Time   `json:"timestamp"`
+		IsDelete  bool        `json:"isDelete"`
+	}{}
+
+	var histories []interface{}
+	for resultsIterator.HasNext() {
+		fmt.Println("Inside Result Iterator")
+		response, err := resultsIterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("Error on fetching history : %v", err.Error())
+		}
+		var record interface{}
+		if !response.IsDelete {
+			if err := json.Unmarshal(response.Value, &record); err != nil {
+				return nil, fmt.Errorf("Error unmarshaling JSON: %v", err)
+			}
+		}
+
+		timestamp, err := ptypes.Timestamp(response.Timestamp)
+		if err != nil {
+			return nil, err
+		}
+
+		historyRecord.Record = record
+		historyRecord.TxId = response.TxId
+		historyRecord.Timestamp = timestamp
+		historyRecord.IsDelete = response.IsDelete
+
+		histories = append(histories, historyRecord)
+	}
+	fmt.Println("*********************")
+	return histories, nil
+}
+
+func (s *SmartContract) GetOwnerHistory(ctx contractapi.TransactionContextInterface, id string, owner string) ([]History, error) {
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{owner, id})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create composite key for id %v and err is :%v", id, err.Error())
+	}
+	fmt.Println("Composite Key : ", compositeKey)
+	resultsIterator, err := ctx.GetStub().GetHistoryForKey(compositeKey)
+	if err != nil {
+		return nil, fmt.Errorf("Error on fetching history : %v", err.Error())
+	}
+	defer resultsIterator.Close()
+
+	var histories []History
+
+	for resultsIterator.HasNext() {
+		fmt.Println("Inside REsult iterator")
+		queryResult, err := resultsIterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("Error on fetching history : %v", err.Error())
+
+		}
+		fmt.Println("queryResult ", (queryResult))
+
+		var ownerRec Owner
+		fmt.Println("Owner record - queryResult.Value: ", string(queryResult.Value))
+		if !queryResult.IsDelete {
+			err = json.Unmarshal(queryResult.Value, &ownerRec)
+			if err != nil {
+				return nil, fmt.Errorf("Error on Umarshar record : %v", err.Error())
+			}
+		}
+
+		timestamp, err := ptypes.Timestamp(queryResult.Timestamp)
+		if err != nil {
+			return nil, err
+		}
+
+		record := History{
+			Record:    &ownerRec,
+			TxId:      queryResult.TxId,
+			Timestamp: timestamp,
+			IsDelete:  queryResult.IsDelete,
+		}
+		histories = append(histories, record)
+	} //End - For Loop
+	return histories, nil
+}
+
+func (sender Owner) removeBalance(ctx contractapi.TransactionContextInterface, amount int) error {
+
+	if sender.Balance < amount {
+		return fmt.Errorf("Insuffcient balance")
+	}
+
+	updatedBalance, err := sub(sender.Balance, amount)
+	if err != nil {
+		return err
+	}
+	sender.Balance = updatedBalance
+	fmt.Println("Sender Updated balance :", sender.Balance)
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{sender.Id, sender.ParentId})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for owner %v and err is :%v", sender.Id, err.Error())
+	}
+	if sender.Balance == 0 {
+		err = ctx.GetStub().DelState(compositeKey)
+		if err != nil {
+			return fmt.Errorf("failed to delete owner record :%v", sender.Id, err.Error())
+		}
+	} else {
+		ownerBytes, err := json.Marshal(sender)
+		if err != nil {
+			return err
+		}
+		err = ctx.GetStub().PutState(compositeKey, ownerBytes)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (receiver Owner) addBalance(ctx contractapi.TransactionContextInterface, amount int) error {
+	compositeKey, err := ctx.GetStub().CreateCompositeKey(ownerRecIndex, []string{receiver.Id, receiver.ParentId})
+	if err != nil {
+		return fmt.Errorf("failed to create composite key for receiver %v and err is :%v", receiver.Id, err.Error())
+	}
+
+	updatedBalance, err := add(receiver.Balance, amount)
+	if err != nil {
+		return err
+	}
+	receiver.Balance = updatedBalance
+	fmt.Println("Receiver Updated balance :", receiver.Balance)
+
+	receiverBytes, err := json.Marshal(receiver)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(compositeKey, receiverBytes)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
